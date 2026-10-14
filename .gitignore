@@ -1,0 +1,46 @@
+# --- Python / uv ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# uv.lock is normally committed; uncomment only if you do not want it tracked
+# uv.lock
+
+# --- Secrets and private data (never commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*_rsa
+*_ed25519
+secrets/
+credentials/
+*.sqlite
+*.db
+data/private/
+private/
+
+# --- Agent / editor local state ---
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# --- OS / noise ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+tmp/
+temp/
