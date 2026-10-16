@@ -166,3 +166,135 @@ fact, outside these files — `git log --oneline -1` for the hash, `git status -
 upstream, `git ls-remote origin` for what the server holds — and is reported to the owner in
 conversation at that point. If those commands ever disagree with this narrative, **they are
 right and this file is stale**: fix this file rather than trusting it.
+
+---
+
+## Run 3 — 2026-10-16 — Single-file Snake game (`snake/`)
+
+### Model and endpoint
+
+Same gateway and `settings.json` configuration as Runs 1 and 2, therefore **the same redaction
+applies**: hostname, configured model alias and the alias→model mapping are omitted on purpose.
+Claude Code CLI 2.1.299, entrypoint `cli`. As in both earlier runs, the interactive `/status`
+panel could not be executed by the agent, so `/status` remains the authority on the model line
+and this table cannot substitute for it.
+
+### What I was asked to do
+
+Read `AGENTS.md`, `CLAUDE.md`, `README.md` and `PLAN.md` first and follow their rules. Create a
+`snake/` subfolder for the task and, inside it, a complete Snake game as a single file
+`snake/index.html` that works in a standard browser when opened by double-clicking — no server,
+no package installation, no internet connection.
+
+### How the result was checked
+
+The interesting question was what could *actually* verify this, since `AGENTS.md` asks for
+meaningful checks and there is no Python, no `pytest` and no Node here. What existed and was
+used: the two Chromium browsers already installed.
+
+- **The real file, not a copy.** `snake/tests/run_game_tests.html` loads `../index.html` *by
+  URL into a `file://` iframe*, so the browser parses the actual bytes of the game; no copy of
+  the game is embedded in the harness. Assertions reach into that live document — real canvas,
+  real DOM, real `KeyboardEvent`/`TouchEvent`, real game loop.
+- **35 checks, run twice over:** headless Edge 155.0.4283.45 → **35/35**, headless Chrome
+  155.0.8059.82 → **35/35**. Run twice consecutively in Edge (34/34 both times at that point)
+  because the timing-sensitive checks depend on wall-clock behaviour.
+- **The game is played, not just poked.** One check runs a BFS pathfinder that plays using
+  arrow keys only — it reads the board and presses keys, never writing game state — and must
+  reach score 4. Another samples state, HUD text and canvas pixels together during that
+  self-played game. Another asserts each segment paints at *its own cell* by reading back the
+  pixel at each cell centre.
+- **The double-click case specifically.** An iframe is not what a double-click does, so the
+  game was also loaded as a top-level `file://` document with `--enable-logging=stderr` and the
+  page console captured: **0 uncaught errors** (the one console line in the capture comes from
+  an installed browser extension, not the game).
+- **No network references.** Pattern scan for `https?://|src=|<link|@import|fetch\(|
+  XMLHttpRequest|WebSocket|integrity=|cdn` returns exactly one line: `<link rel="icon"
+  href="data:,">`, an empty `data:` URL that suppresses the `favicon.ico` request. Full output
+  in `snake/CHECKS.md` §1–2.
+- **The suite was mutation-checked.** The bug below was re-inserted deliberately; exactly one
+  check failed — the new regression guard — and 34 stayed green. Restored from a byte copy,
+  `diff` clean, 35/35 again. Without this, a green suite proves little about itself.
+- **Privacy scan** (the repo is public): local account name and `C:\Users\…` paths across
+  `snake/`, `README.md`, `PLAN.md` → none; secret-pattern scan → clean. Recorded in
+  `PLAN.md` → open items.
+- **Git state:** `git status --short` → ` M PLAN.md`, ` M README.md`, `?? snake/`; nothing
+  staged, committed or pushed. `git check-ignore` exits 1 on all six snake files, so none is
+  accidentally ignored; `find` confirms no binaries were left in the task folder.
+
+Two tool-discovery details worth keeping: `msedge --version` / `chrome --version` do not work
+here (hangs with a fresh profile, prints "opening in existing session" without one) — read
+`(Get-Item …).VersionInfo.ProductVersion` instead. And a browser navigated directly at a `.js`
+file displays it as text rather than executing it, which is why the first harness attempt had
+to become an `.html` page.
+
+### Result
+
+Two real bugs, both found by the checks rather than by reading the code:
+
+1. **`placeApple()` freed a cell the head was standing on**, so on a nearly full board the
+   apple could land on the snake's own head and a full board never reported a win. Found by the
+   board-cleared check failing with `expected "win", got ""`.
+2. **A `window.S` console alias clobbered the game's state.** In a classic script a top-level
+   `var S` *is* `window.S`, so the alias replaced the state object; the board painted once and
+   then every frame threw. **The game was unplayable on a real double-click** — the exact case
+   the task required — while the suite stayed green, because every check called `reset()`
+   first, which quietly repopulated the ruined object.
+
+Bug 2 is the finding worth keeping. It was found only by running the game the way a user would
+(top-level `file://`, console captured), and it produced check `00a`: take the page exactly as
+the browser left it and ask it to paint, with no `reset()` in between. The script is now
+IIFE-wrapped so no name is global at all. Full write-up in `snake/NOTES.md`; raw output in
+`snake/CHECKS.md`, including the run-by-run failure progression (24/33 → 35/35) so the passing
+count can be read in context.
+
+Also updated because they had become false: root `README.md` said "There is **no code yet** —
+nothing to execute beyond the checks below", which this task contradicts, and its layout table
+listed only `setup-project/` as an example task folder. `PLAN.md`'s "no code yet" stage is now
+labelled as history. Per `AGENTS.md`, where docs contradict reality, reality wins.
+
+### Honest limitations
+
+- **The game has never been looked at.** A screenshot was captured but not reviewed: reading it
+  back was blocked by this session's working-directory permissions, and the run that would have
+  written it into the repo was declined. Colour balance, spacing and overlay legibility are
+  unverified. Check 34 would notice a silent visual regression only by accident.
+  **Superseded later the same day — see "Follow-up" below.** This bullet is left as written
+  because it was true when the run ended; the gap was real and closing it was not this agent's
+  call to make.
+- **Firefox and Safari untested** — not installed. Only Chromium-family was exercised.
+- **No real touch device.** Swipe steering is implemented and tested with synthetic
+  `TouchEvent`s, which is not the same as a finger.
+- **Headless Chromium starves `requestAnimationFrame`** (measured: 2 callbacks in 3.5 s —
+  `snake/CHECKS.md` §8). The game carries a `setInterval` clock fallback for exactly this
+  reason, so the loop checks pass by exercising a path a real browser does not primarily use.
+  In a real browser rAF drives it; that path is covered by checks 30–33 only in the sense that
+  the same `tick()` runs.
+- The one pixel check calls `render()` explicitly for the reason above, so it proves **what**
+  is drawn, not **when**.
+- **Nothing committed.** No `git add`, `commit` or `push`, per `AGENTS.md`.
+- Mid-task, two things were stopped on request: a drafted Python test runner (discarded, never
+  run — no package was installed and no `uv`/`pip` action was taken) and screenshot-writing
+  into the repo. `snake/tests/view.html`, which existed only for that screenshot, was deleted.
+
+### Follow-up — 2026-10-16, manual verification and commit preparation
+
+The owner opened `snake/index.html` in a real browser and confirmed **the game works
+correctly**. That is the first human eye on it and the only evidence about appearance and feel;
+the automated suite asserts nothing about either. Nothing was flagged as wrong, so no
+behavioural follow-up is recorded, and the `snake/NOTES.md` and `snake/CHECKS.md` claims that
+said "not reviewed" were corrected to match.
+
+Before committing, the suite was run once more against the exact bytes about to be committed:
+`TOTALS 35/35 PASS` (headless Edge). The file's checksum was compared against the copy the
+earlier Edge and Chrome runs passed on, to be sure the green result still described the thing
+being committed rather than an earlier revision.
+
+Publication was requested separately, as in Run 2, and the file list and diff were shown for
+approval. `git add` was then **blocked three times by the session's permission layer** ("Auto
+mode could not evaluate this action and is blocking it for safety"), as were a `git diff`
+variant and shell output redirects. The agent deliberately did not attempt to route around
+that guard with a different command shape, so staging and committing were left to the owner
+with the file list, the diff and a prepared commit message. Everything read-only was still
+run: the suite was re-run green, the file list enumerated, and both the secret-pattern and
+private-path scans completed over exactly the files to be committed.

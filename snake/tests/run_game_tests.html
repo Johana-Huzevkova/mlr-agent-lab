@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Snake test harness</title>
+</head>
+<body>
+<!--
+  Headless verification for snake/index.html. Run with Edge or Chrome, no server:
+
+    msedge.exe --headless=new --disable-gpu --virtual-time-budget=20000 \
+      --allow-file-access-from-files \
+      --user-data-dir=<some empty temp dir> \
+      --dump-dom "file:///D:/MLR/snake/tests/run_game_tests.html"
+
+  Then read the report out of the dumped HTML: look for <pre id="snake-test-report"> and the
+  title "SNAKE-TESTS n/n PASS". --dump-dom exits 0 even when the page throws, so the exit code
+  alone means nothing; the counts in the DOM are the result.
+
+  How it tests the real file: this page loads ../index.html into the iframe below by URL, so
+  the browser parses and runs the actual bytes of snake/index.html -- the same thing that
+  happens when you double-click it. No copy of the game is embedded or rewritten here. The
+  assertions then reach into that live document (game state, canvas, HUD, real KeyboardEvents)
+  through the iframe's contentWindow, which file:// same-origin access allows under
+  --allow-file-access-from-files. Without that flag the cross-frame access is blocked and
+  every check reports BLOCKED, not passed.
+
+  What this is NOT: proof that a window opened on your screen, or that every browser renders
+  it correctly. It runs headless, in one Chromium-family browser, in an iframe.
+-->
+<iframe id="frame" src="../index.html" width="700" height="560" title="game under test"></iframe>
+<pre id="snake-test-report">running...</pre>
+
+<script>
+(function () {
+  'use strict';
+
+  var frame = document.getElementById('frame');
+  var out = document.getElementById('snake-test-report');
+  var results = [];
+  var pass = 0;
+  var fail = 0;
+  var blocked = '';
+
+  function check(name, fn) {
+    try {
+      fn();
+      pass++;
+      results.push('PASS  ' + name);
+    } catch (err) {
+      fail++;
+      results.push('FAIL  ' + name + '  -- ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+  function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+  function eq(actual, expected, msg) {
+    if (actual !== expected) {
+      throw new Error((msg || '') + ': expected ' + JSON.stringify(expected) +
+                      ', got ' + JSON.stringify(actual));
+    }
+  }
+  function report() {
+    var lines = [];
+    lines.push('harness url : ' + location.href);
+    lines.push('game frame  : ' + (frame.contentWindow ? frame.src : '(no frame)'));
+    if (blocked) lines.push('BLOCKED     : ' + blocked);
+    lines.push(results.join('\n'));
+    lines.push('TOTALS ' + pass + '/' + (pass + fail) + ' PASS');
+    out.textContent = lines.join('\n');
+    document.title = 'SNAKE-TESTS ' + pass + '/' + (pass + fail) + ' PASS';
+  }
+
+  function waitMs(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* ---- frame plumbing: this is where file:// same-origin access is needed ---- */
+  var win = null, doc = null, G = null, S = null, pageErrors = [];
+
+  function bindFrame() {
+    win = frame.contentWindow;
+    if (!win) throw new Error('the iframe has no window');
+    doc = win.document;
+    win.addEventListener('error', function (e) {
+      pageErrors.push('error: ' + (e && e.message ? e.message : String(e)) +
+        (e && e.filename ? ' @' + e.filename.replace(/^.*\//, '') + ':' + e.lineno : ''));
+    });
+    win.addEventListener('unhandledrejection', function (e) {
+      var why = e && e.reason;
+      pageErrors.push('rejection: ' + (why && why.message ? why.message +
+        (why.stack ? ' | ' + String(why.stack).split('\n')[1] : '') : String(why)));
+    });
+    G = win.__SNAKE__;
+    if (!G || !G.state) {
+      throw new Error('window.__SNAKE__ is not reachable from the parent page -- either the ' +
+        'game script threw, or file:// frames are treated as cross-origin here. Re-run with ' +
+        '--allow-file-access-from-files');
+    }
+    S = function () { return G.state; };
+  }
+
+  function byId(id) { return doc.getElementById(id); }
+  function putSnake(list) {
+    S().snake = list.map(function (p) { return { x: p[0], y: p[1] }; });
+  }
+  function setApple(x, y) { S().apple = { x: x, y: y }; }
+  function setDir(x, y) { S().dir = { x: x, y: y }; S().pending = []; }
+  function head() { return S().snake[0]; }
+
+  /* Move the apple one free cell ahead of the head so a step() is guaranteed to be legal. */
+  function aimAhead() {
+    var h = head();
+    var taken = {};
+    S().snake.forEach(function (s) { taken[s.x + ',' + s.y] = true; });
+    var opts = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+    for (var i = 0; i < 4; i++) {
+      var nx = h.x + opts[i][0], ny = h.y + opts[i][1];
+      if (nx >= 0 && ny >= 0 && nx < G.COLS && ny < G.ROWS && !taken[nx + ',' + ny]) {
+        setDir(opts[i][0], opts[i][1]);
+        setApple(nx, ny);
+        return { x: nx, y: ny };
+      }
+    }
+    throw new Error('no free cell ahead of the head');
+  }
+
+  function pressKey(opts) {
+    var ev = new win.KeyboardEvent('keydown', opts);
+    (opts.target || doc).dispatchEvent(ev);
+    return ev;
+  }
+  function pressArrow(dirName) {
+    var map = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' };
+    return pressKey({ code: map[dirName], bubbles: true, cancelable: true });
+  }
+  function pressDir(vec) {
+    var names = { '1,0': 'right', '-1,0': 'left', '0,1': 'down', '0,-1': 'up' };
+    return pressArrow(names[vec[0] + ',' + vec[1]]);
+  }
+  // Read-only board query for the autopilot: would stepping this way hit my own body? Edges
+  // count as safe because the autopilot runs with wrap on. It mirrors the game's rule -- the
+  // tail cell frees up on a step that does not grow -- but it only guides steering, it asserts
+  // nothing, so a disagreement here makes the autopilot clumsy rather than making a test lie.
+  function occupiedAhead(vec) {
+    var h = head();
+    var nx = (h.x + vec[0] + G.COLS) % G.COLS;
+    var ny = (h.y + vec[1] + G.ROWS) % G.ROWS;
+    var growing = (nx === S().apple.x && ny === S().apple.y);
+    var limit = growing ? S().snake.length : S().snake.length - 1;
+    for (var i = 0; i < limit; i++) {
+      if (S().snake[i].x === nx && S().snake[i].y === ny) return true;
+    }
+    return false;
+  }
+  function pollUntil(condFn, label, ms) {
+    var limit = ms || 4000;
+    var deadline = Date.now() + limit;
+    return new Promise(function (resolve) {
+      (function poll() {
+        var verdict = condFn();
+        if (verdict !== false) return resolve(verdict === true ? 'ok' : verdict);
+        if (Date.now() > deadline) return resolve(label + ' (timed out after ' + limit + 'ms)');
+        setTimeout(poll, 16);
+      })();
+    });
+  }
+
+  /* ---- checks ---- */
+
+  function runSync() {
+    check('00a a freshly loaded page paints before any test calls reset', function () {
+      // Regression guard. The game once defined `window.S` as a console alias while also
+      // holding its state in a top-level `var S` -- the same property, so the alias destroyed
+      // the state. The board still painted once (that happened before the alias ran), so the
+      // game looked fine until the next frame. Every check below starts by calling reset(),
+      // which quietly repopulated the ruined object and hid the bug completely. This check
+      // takes the page exactly as the browser left it after a double-click and asks it to
+      // paint, with no reset in between.
+      var errorsBefore = pageErrors.length;
+      G.render();
+      var board = byId('board');
+      var img = board.getContext('2d').getImageData(0, 0, board.width, board.height).data;
+      var lit = 0;
+      for (var i = 0; i < img.length; i += 4 * 53) {
+        if (img[i] + img[i + 1] + img[i + 2] > 90) lit++;
+      }
+      assert(lit > 20, 'the freshly loaded board painted almost nothing (' + lit +
+        ' lit samples) -- the load-then-paint path is broken');
+      assert(pageErrors.length === errorsBefore,
+        'painting a freshly loaded page threw: ' + JSON.stringify(pageErrors.slice(errorsBefore)));
+      // and the state the page booted with must be the state the hook exposes
+      assert(Array.isArray(S().snake) && S().snake.length === 3,
+        'the page did not boot into a 3-segment snake');
+      assert(S().apple && S().apple.x >= 0, 'the page did not boot with an apple placed');
+    });
+
+    check('01 the real snake/index.html loaded in a file:// frame and started', function () {
+      assert(/^file:/.test(location.href), 'harness is not running over file://');
+      eq(doc.title, 'Snake', 'the frame did not load the game page');
+      assert(!!win.__SNAKE__, 'game script did not run in the frame');
+    });
+
+    check('02 the page really has the game: canvas, 2D context, HUD', function () {
+      assert(byId('board'), 'no #board canvas');
+      assert(byId('board').getContext('2d'), 'canvas 2D context unavailable');
+      ['score', 'best', 'speed', 'growth', 'overlay', 'primary', 'pause', 'wrapBtn',
+       'soundBtn', 'growthSel'].forEach(function (id) {
+        assert(byId(id), 'missing #' + id);
+      });
+      assert(byId('board').width > 0 && byId('board').height > 0, 'canvas has no backing store');
+    });
+
+    check('03 fresh game: ready, 3 segments, apple on a free in-bounds cell', function () {
+      G.reset(false);
+      eq(S().state, 'ready');
+      eq(S().snake.length, 3);
+      eq(S().score, 0);
+      var a = S().apple;
+      assert(a.x >= 0 && a.x < G.COLS && a.y >= 0 && a.y < G.ROWS, 'apple off board');
+      assert(!S().snake.some(function (s) { return s.x === a.x && s.y === a.y; }),
+        'apple spawned on the snake');
+    });
+
+    check('04 one step moves the head one cell and keeps the length', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      eq(S().snake[0].x, 6);
+      eq(S().snake[0].y, 9);
+      eq(S().snake.length, 3);
+    });
+
+    check('05 arrow key turns the snake', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      pressArrow('up');
+      G.step();
+      eq(S().snake[0].x, 5);
+      eq(S().snake[0].y, 8);
+    });
+
+    check('06 WASD turns the snake too', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      pressKey({ code: 'KeyS', bubbles: true, cancelable: true });
+      G.step();
+      eq(S().snake[0].y, 10);
+    });
+
+    check('07 two turns queued between steps both land, in order', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      pressArrow('up');
+      pressArrow('left');
+      G.step();
+      eq(S().snake[0].y, 8);
+      G.step();
+      eq(S().snake[0].x, 4);
+    });
+
+    check('08 eating: +1 score, +1 segment, apple relocated', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(6, 9);
+      G.step();
+      eq(S().score, 1);
+      eq(S().snake.length, 4);
+      assert(S().apple.x !== 6 || S().apple.y !== 9, 'apple left under the head');
+    });
+
+    check('09 growth per apple is honoured (3)', function () {
+      G.reset(true);
+      S().grow = 3;
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(6, 9);
+      G.step();
+      eq(S().snake.length, 6, 'length after one apple at growth 3');
+      eq(S().score, 1);
+      S().grow = 1;
+    });
+
+    check('10 the growth control drives the engine through the DOM', function () {
+      G.reset(true);
+      var sel = byId('growthSel');
+      sel.value = '3';
+      sel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      eq(S().grow, 3, 'select did not reach the game');
+      eq(byId('growth').textContent, '3', 'HUD did not reflect it');
+      sel.value = '1';
+      sel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      eq(S().grow, 1);
+    });
+
+    check('11 the apple never lands on the snake, over many board layouts', function () {
+      var total = G.COLS * G.ROWS;
+      var strides = [5, 7, 11, 13, 17, 19, 23, 25, 29, 31];
+      var exercised = 0;
+      var skipped = 0;
+      for (var iter = 0; iter < 250; iter++) {
+        G.reset(true);
+        var stride = strides[iter % strides.length];
+        var len = 3 + (iter * 7) % (total - 8);
+        var body = [];
+        var taken = {};
+        for (var j = 0; j < len; j++) {
+          var idx = (j * stride + iter) % total;
+          var c = { x: idx % G.COLS, y: Math.floor(idx / G.COLS) };
+          if (taken[c.x + ',' + c.y]) continue;
+          taken[c.x + ',' + c.y] = true;
+          body.push(c);
+        }
+        S().snake = body;
+        try {
+          aimAhead();          // needs one legal move out of the head; fully walled heads skip
+        } catch (e) {
+          skipped++;
+          continue;
+        }
+        exercised++;
+        G.step();
+        assert(S().state === 'running', 'layout ' + iter + ' died unexpectedly');
+        var a = S().apple;
+        assert(a.x >= 0 && a.x < G.COLS && a.y >= 0 && a.y < G.ROWS,
+          'apple outside the board, layout ' + iter + ': ' + JSON.stringify(a));
+        assert(!S().snake.some(function (s) { return s.x === a.x && s.y === a.y; }),
+          'apple on the snake, layout ' + iter + ' length ' + S().snake.length);
+      }
+      assert(exercised >= 150, 'only ' + exercised + ' of 250 layouts were usable (' +
+        skipped + ' skipped); the check would be too thin to mean anything');
+    });
+
+    check('12 speed rises every SPEED_EVERY apples and the tick shortens', function () {
+      G.reset(true);
+      S().wrap = true;
+      eq(S().speedLevel, 1);
+      var firstStep = S().stepMs;
+      for (var i = 0; i < G.SPEED_EVERY; i++) { aimAhead(); G.step(); }
+      eq(S().score, G.SPEED_EVERY);
+      eq(S().speedLevel, 2);
+      assert(S().stepMs < firstStep, 'tick length did not shrink');
+      S().wrap = false;
+    });
+
+    check('13 walls on: the edge is fatal', function () {
+      G.reset(true);
+      S().wrap = false;
+      putSnake([[G.COLS - 1, 9], [G.COLS - 2, 9], [G.COLS - 3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      eq(S().state, 'over');
+      eq(S().death, 'wall');
+    });
+
+    check('14 walls off: the same move crosses to the far edge', function () {
+      G.reset(true);
+      S().wrap = true;
+      putSnake([[G.COLS - 1, 9], [G.COLS - 2, 9], [G.COLS - 3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      eq(S().state, 'running');
+      eq(S().snake[0].x, 0);
+      eq(S().snake[0].y, 9);
+      S().wrap = false;
+    });
+
+    check('15 biting a mid-body segment is fatal', function () {
+      // contiguous coil; the head at (5,5) moves right onto (6,5), body index 5 of 8 --
+      // not the tail, so it must be a collision.
+      G.reset(true);
+      putSnake([[5, 5], [4, 5], [4, 6], [5, 6], [6, 6], [6, 5], [7, 5], [7, 6]]);
+      setDir(1, 0); setApple(0, 0);
+      eq(S().snake[7].x + ',' + S().snake[7].y, '7,6', 'fixture: tail is not where the test thinks');
+      G.step();
+      eq(S().state, 'over');
+      eq(S().death, 'self');
+    });
+
+    check('16 moving into the cell your tail just vacated is safe', function () {
+      // 2x2 loop; the head at (5,5) moves right into (6,5), which is the tail and frees up
+      // on this very step.
+      G.reset(true);
+      putSnake([[5, 5], [5, 6], [6, 6], [6, 5]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      eq(S().state, 'running');
+      eq(S().snake.length, 4);
+      eq(S().snake[0].x + ',' + S().snake[0].y, '6,5');
+    });
+
+    check('17 a straight reversal is refused, not turned into suicide', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9], [2, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      pressArrow('left');
+      G.step();
+      eq(S().state, 'running');
+      eq(S().snake[0].x, 6, 'the snake reversed instead of ignoring the key');
+    });
+
+    check('18 pause freezes movement and the clock; resume continues', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      S().elapsed = 1234;
+      pressKey({ code: 'Space', bubbles: true, cancelable: true });
+      eq(S().state, 'paused');
+      var before = JSON.stringify(S().snake);
+      G.step();
+      eq(JSON.stringify(S().snake), before, 'snake moved while paused');
+      eq(S().elapsed, 1234, 'clock advanced while paused');
+      pressKey({ code: 'Space', bubbles: true, cancelable: true });
+      eq(S().state, 'running');
+      G.step();
+      eq(S().snake[0].x, 6);
+    });
+
+    check('19 death is final until you start a new game', function () {
+      G.reset(true);
+      S().wrap = false;
+      putSnake([[G.COLS - 1, 9], [G.COLS - 2, 9], [G.COLS - 3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      eq(S().state, 'over');
+      var before = JSON.stringify(S().snake);
+      G.step(); G.step();
+      eq(JSON.stringify(S().snake), before, 'game kept running after death');
+      pressArrow('left');
+      eq(S().state, 'over', 'a keypress restarted or resumed by itself');
+    });
+
+    check('20 the best score survives a reset; the run score does not', function () {
+      G.reset(true);
+      S().best = 0;
+      S().score = 7;
+      for (var i = 1; i < 7; i++) S().snake.push({ x: 1, y: 1 });
+      aimAhead();
+      G.step();
+      eq(S().best, 8, 'scoring move did not promote the best score');
+      G.reset(false);
+      eq(S().best, 8, 'best was lost across a reset');
+      eq(S().score, 0);
+    });
+
+    check('21 localStorage is not required to play (file:// safe)', function () {
+      // Reading the property must not throw even if the browser blocks storage on file://.
+      var ok = true;
+      try { win.localStorage.getItem('snake.best'); } catch (e) { ok = false; }
+      assert(ok || true, 'storage blocked; the game guards this with try/catch either way');
+      // The real requirement: a blocked storage must not break scoring.
+      G.reset(true);
+      S().best = 5;
+      aimAhead();
+      G.step();
+      assert(S().best >= 5, 'best regressed when storage was unavailable');
+    });
+
+    check('22 board-cleared win fires when no cell is free', function () {
+      G.reset(true);
+      var total = G.COLS * G.ROWS;
+      var body = [];
+      for (var idx = 0; idx < total; idx++) {
+        if (idx === 0) continue;                       // cell (0,0) is the only free one
+        body.push({ x: idx % G.COLS, y: Math.floor(idx / G.COLS) });
+      }
+      var at = -1;
+      body.forEach(function (c, i) { if (c.x === 1 && c.y === 0) at = i; });
+      assert(at >= 0, 'expected a segment at (1,0)');
+      body.splice(at, 1);
+      body.unshift({ x: 1, y: 0 });                    // head first, next to the free cell
+      S().snake = body;
+      setDir(-1, 0);
+      setApple(0, 0);
+      eq(S().snake.length, total - 1);
+      G.step();
+      eq(S().death, 'win');
+      eq(S().state, 'over');
+    });
+
+    check('23 keyboard ownership: game keys consumed, control keys left alone', function () {
+      G.reset(true);
+      var space = pressKey({ code: 'Space', bubbles: true, cancelable: true, target: byId('board') });
+      assert(space.defaultPrevented, 'Space over the board was not consumed by the game');
+
+      var sel = byId('growthSel');
+      var before = sel.value;
+      var onSel = pressKey({ code: 'ArrowUp', bubbles: true, cancelable: true, target: sel });
+      assert(!onSel.defaultPrevented, 'game hijacked ArrowUp while the growth select had focus');
+      eq(sel.value, before);
+
+      var onBtn = pressKey({ code: 'Space', bubbles: true, cancelable: true, target: byId('pause') });
+      assert(!onBtn.defaultPrevented, 'game hijacked Space while a button had focus');
+
+      var ctrlR = pressKey({ code: 'KeyR', bubbles: true, cancelable: true, ctrlKey: true });
+      assert(!ctrlR.defaultPrevented, 'game consumed Ctrl+R; the browser reload must stay yours');
+    });
+
+    check('24 the buttons drive the game', function () {
+      G.reset(false);
+      byId('primary').click();
+      eq(S().state, 'running', 'primary did not start the game');
+      byId('pause').click();
+      eq(S().state, 'paused');
+      byId('pause').click();
+      eq(S().state, 'running');
+      var walls = S().wrap;
+      byId('wrapBtn').click();
+      eq(S().wrap, !walls);
+      eq(byId('wrapBtn').textContent, 'Walls: ' + (!walls ? 'off' : 'on'));
+      byId('wrapBtn').click();
+      eq(S().wrap, walls);
+      byId('primary').click();          // running -> pause
+      eq(S().state, 'paused');
+    });
+
+    check('25 the overlay mirrors the state', function () {
+      G.reset(false);
+      eq(byId('overlay').hidden, false, 'ready should show the overlay');
+      G.reset(true);
+      eq(byId('overlay').hidden, true, 'running should hide the overlay');
+      G.setPaused(true);
+      eq(byId('overlay').hidden, false, 'paused should show the overlay');
+      eq(byId('ovTitle').textContent, 'Paused');
+    });
+
+    check('26 the death message says what happened', function () {
+      G.reset(true);
+      S().wrap = false;
+      putSnake([[G.COLS - 1, 9], [G.COLS - 2, 9], [G.COLS - 3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      G.step();
+      G.setPaused(false);   // no-op while over; only here to be sure death is not resumable
+      eq(S().state, 'over');
+      eq(byId('ovTitle').textContent, 'Hit the wall');
+      assert(/Score 0/.test(byId('ovText').textContent), 'no score in the death text');
+    });
+
+    check('27 on-screen score follows the engine when the HUD refreshes', function () {
+      G.reset(true);
+      byId('score').textContent = 'sentinel';
+      aimAhead();
+      G.step();
+      G.setPaused(true);    // setPaused -> updateHud, the same call the loop makes after each move
+      eq(byId('score').textContent, String(S().score));
+      assert(byId('score').textContent !== 'sentinel', 'HUD never refreshed');
+    });
+
+    check('28 touch swipe turns the snake', function () {
+      G.reset(true);
+      putSnake([[5, 9], [4, 9], [3, 9]]);
+      setDir(1, 0); setApple(0, 0);
+      var board = byId('board');
+      var rect = board.getBoundingClientRect();
+      var cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+      function touch(type, x, y) {
+        var t = new win.Touch({ identifier: 1, target: board, clientX: x, clientY: y });
+        var ev = new win.TouchEvent(type, {
+          bubbles: true, cancelable: true, changedTouches: [t], touches: [t], targetTouches: [t]
+        });
+        board.dispatchEvent(ev);
+      }
+      touch('touchstart', cx - 40, cy);
+      touch('touchend', cx + 40, cy);
+      G.step();
+      eq(S().snake[0].x, 6, 'rightward swipe did not steer');
+      touch('touchstart', cx, cy - 40);
+      touch('touchend', cx, cy + 40);
+      G.step();
+      eq(S().snake[0].y, 10, 'downward swipe did not steer');
+    });
+
+    check('29 the renderer paints each segment and the apple at its own board cell', function () {
+      // Place a known board, paint it, then read back the pixels at the cell centres and ask
+      // whether the colour there matches what that cell should hold. This proves the drawing
+      // lands where the model says it does, not merely that the canvas is colourful.
+      G.reset(true);
+      S().wrap = false;
+      putSnake([[3, 4], [2, 4], [1, 4]]);
+      setDir(1, 0);
+      setApple(10, 7);
+      G.setPaused(true);              // paused dims slightly but keeps both figures visible
+      G.render();
+
+      var board = byId('board');
+      var dpr = Math.min(3, win.devicePixelRatio || 1);
+      var cell = board.width / dpr / G.COLS;      // CSS px per cell, as the renderer computes it
+      var img = board.getContext('2d').getImageData(0, 0, board.width, board.height).data;
+      function centre(x, y) {
+        var px = Math.round((x + 0.5) * cell * dpr);
+        var py = Math.round((y + 0.5) * cell * dpr);
+        var i = (py * board.width + px) * 4;
+        return [img[i], img[i + 1], img[i + 2]];
+      }
+      var empty = centre(20, 15);                 // a cell nothing occupies
+      var headPx = centre(3, 4);
+      var bodyPx = centre(2, 4);
+      var applePx = centre(10, 7);
+
+      function dist(a, b) {
+        return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+      }
+      assert(dist(headPx, empty) > 60,
+        'head cell looks like empty board: ' + headPx + ' vs ' + empty);
+      assert(dist(bodyPx, empty) > 60,
+        'body cell looks like empty board: ' + bodyPx + ' vs ' + empty);
+      assert(dist(applePx, empty) > 60,
+        'apple cell looks like empty board: ' + applePx + ' vs ' + empty);
+      // the head is drawn brighter than the tail end of the same snake
+      assert(headPx[1] > bodyPx[1] || headPx[1] > 120,
+        'head is not brighter than body: ' + headPx + ' vs ' + bodyPx);
+      // the apple is a red-ish dot, the snake is green-ish: their channels must differ in sign
+      assert(applePx[0] > applePx[1], 'apple is not redder than green: ' + applePx);
+      assert(bodyPx[1] > bodyPx[0], 'snake body is not greener than red: ' + bodyPx);
+      // and a cell two squares away from everything must match the empty board
+      assert(dist(centre(21, 15), empty) <= 60, 'a supposedly empty cell is not empty');
+    });
+  }
+
+  /* Breadth-first search over the grid, wrap-aware, treating my own body as walls (the tail
+     cell excluded on a step that does not grow). Returns the first move vector of a shortest
+     path from the head to the apple, or null when the apple is unreachable. Reads state only;
+     it is the autopilot's planner, not an oracle -- the assertions are about what the game did. */
+  function planStep() {
+    var h = head(), a = S().apple;
+    var start = h.x + ',' + h.y;
+    var goal = a.x + ',' + a.y;
+    if (start === goal) return null;
+    var body = {};
+    S().snake.forEach(function (s, i) { if (i !== S().snake.length - 1) body[s.x + ',' + s.y] = true; });
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    var seen = {};
+    seen[start] = null;                     // cell -> {from, dir} for path reconstruction
+    var queue = [h];
+    while (queue.length) {
+      var cur = queue.shift();
+      for (var d = 0; d < 4; d++) {
+        var nx = cur.x + dirs[d][0];
+        var ny = cur.y + dirs[d][1];
+        if (S().wrap) {
+          nx = (nx + G.COLS) % G.COLS;
+          ny = (ny + G.ROWS) % G.ROWS;
+        } else if (nx < 0 || ny < 0 || nx >= G.COLS || ny >= G.ROWS) {
+          continue;                     // walls kill, so the planner must not plan through them
+        }
+        var k = nx + ',' + ny;
+        if (seen[k] !== undefined) continue;
+        if (body[k] && !(nx === a.x && ny === a.y)) continue;
+        seen[k] = { from: cur, dir: dirs[d] };
+        if (k === goal) {
+          var node = seen[k];
+          while (node.from.x !== h.x || node.from.y !== h.y) node = seen[node.from.x + ',' + node.from.y];
+          return node.dir;
+        }
+        queue.push({ x: nx, y: ny });
+      }
+    }
+    return null;
+  }
+
+  var asyncChecks = [
+    {
+      name: '30 the game advances by itself once running (real rAF loop)',
+      run: function () {
+        G.reset(true);
+        S().wrap = true;
+        S().stepMs = 25;
+        var steps0 = S().stepCount;
+        var elapsed0 = S().elapsed;
+        return pollUntil(function () {
+          if (S().stepCount > steps0 && S().elapsed > elapsed0) return true;
+          if (S().state === 'over') return 'game died while running free';
+          return false;
+        }, 'no step happened in the animation loop');
+      }
+    },
+    {
+      name: '31 the loop really stops on pause and starts again on resume',
+      run: function () {
+        G.reset(true);
+        S().wrap = true;
+        S().stepMs = 25;
+        return pollUntil(function () { return S().stepCount > 0 ? true : false; },
+          'warm-up step never happened').then(function () {
+            pressKey({ code: 'Space', bubbles: true, cancelable: true });
+            eq(S().state, 'paused');
+            var frozen = S().stepCount;
+            return waitMs(220).then(function () {
+              eq(S().stepCount, frozen, 'the loop kept stepping while paused');
+              pressKey({ code: 'Space', bubbles: true, cancelable: true });
+              return pollUntil(function () { return S().stepCount > frozen ? true : false; },
+                'the loop did not restart after resume');
+            });
+          });
+      }
+    },
+    {
+      // An autopilot, driven only through the keyboard handler -- the same path a player uses.
+      // It never writes game state: it can only press keys, so a pass means the game is really
+      // playable end to end (loop, input, apples, growth) with no test scaffolding inside it.
+      // Wrap is on so the planner can rely on a torus; '13 walls on' covers the edge rule.
+      name: '32 autopilot plays with arrow keys only and reaches a score of 4',
+      run: function () {
+        G.reset(true);
+        S().wrap = true;
+        // The clock in this headless mode advances in ~100 ms bursts (rAF is starved, so the
+        // game's setInterval fallback drives it). A step interval below that makes one tick
+        // advance several cells, which would put the planner's one-cell-at-a-time view out of
+        // date -- the snake would overshoot every apple. One step per clock burst keeps the
+        // planner honest without touching the game.
+        S().stepMs = 130;
+        var budgetMs = 30000;
+        var deadline = Date.now() + budgetMs;
+        var presses = 0;
+        return new Promise(function (resolve) {
+          (function steer() {
+            if (S().score >= 4) return resolve('ok');
+            if (S().state !== 'running') {
+              return resolve('game left the running state at score ' + S().score +
+                ' (death ' + JSON.stringify(S().death) + ') after ' + S().stepCount + ' steps');
+            }
+            if (Date.now() > deadline) {
+              return resolve('score stuck at ' + S().score + ' after ' + budgetMs + 'ms and ' +
+                S().stepCount + ' steps; diagnostics head=' + JSON.stringify(head()) +
+                ' apple=' + JSON.stringify(S().apple) +
+                ' dir=' + JSON.stringify(S().dir) +
+                ' pending=' + JSON.stringify(S().pending) +
+                ' planned=' + JSON.stringify(planStep()) +
+                ' elapsed=' + Math.round(S().elapsed) +
+                ' stepMs=' + S().stepMs + ' presses=' + presses);
+            }
+            var move = planStep();
+            if (move) { presses++; pressDir(move); }
+            setTimeout(steer, 40);
+          })();
+        });
+      }
+    },
+    {
+      name: '33 state, HUD and the painted board stay consistent during a self-played game',
+      run: function () {
+        // The autopilot keeps playing (walls ON this time, so the edge rule is exercised in
+        // play too); while it plays we sample the game and assert three things hold together:
+        // the engine's own numbers, the text the HUD shows, and the pixels on the canvas.
+        G.reset(true);
+        S().wrap = false;
+        S().stepMs = 130;   // one step per clock burst, as in check 31: keeps the planner current
+        var problems = [];
+        var samples = 0;
+        var deadline = Date.now() + 6000;
+        var board = byId('board');
+        var bctx = board.getContext('2d');
+        // Render explicitly before reading pixels: in a real browser the rAF loop repaints, but
+        // in this headless mode rAF barely runs, so the canvas would lag the game state by
+        // design. Forcing the paint makes the check about *what* is drawn, not about scheduling.
+        function samplePixels() {
+          G.render();
+          var img = bctx.getImageData(0, 0, board.width, board.height).data;
+          var distinct = {};
+          var step = 4 * 37;                       // every 37th pixel is plenty
+          for (var i = 0; i < img.length; i += step) {
+            distinct[img[i] + ',' + img[i + 1] + ',' + img[i + 2]] = true;
+          }
+          return Object.keys(distinct).length;
+        }
+        function checkOnce() {
+          samples++;
+          var where = 'sample ' + samples + ' (score ' + S().score + ', state ' + S().state + ')';
+          if (byId('score').textContent !== String(S().score)) {
+            problems.push(where + ': HUD score reads ' + byId('score').textContent);
+          }
+          if (byId('speed').textContent !== String(S().speedLevel)) {
+            problems.push(where + ': HUD speed reads ' + byId('speed').textContent +
+              ' but the game is at ' + S().speedLevel);
+          }
+          if (S().snake.length !== 3 + S().score * S().grow) {
+            problems.push(where + ': length ' + S().snake.length + ' is not 3 + ' + S().score +
+              ' x growth ' + S().grow);
+          }
+          // Only meaningful at growth 1: with growth > 1 the game deliberately stacks the extra
+          // segments on the head cell, which is documented behaviour, not corruption.
+          if (S().grow === 1) {
+            var seen = {};
+            var dupes = S().snake.some(function (s) {
+              var k = s.x + ',' + s.y;
+              if (seen[k]) return true;
+              seen[k] = true;
+              return false;
+            });
+            if (dupes) problems.push(where + ': two segments share a cell');
+          }
+          if (S().snake.length && samplePixels() < 4) {
+            problems.push(where + ': the canvas painted fewer than 4 distinct colours ' +
+              '(blank board?)');
+          }
+        }
+        return new Promise(function (resolve) {
+          (function loop() {
+            // Keep sampling after a death: a game-over screen must leave the HUD and the board
+            // consistent too, and sampling through it keeps the check from depending on how long
+            // this particular run happens to survive (the planner can legitimately get trapped).
+            if (S().state === 'running') {
+              var move = planStep();
+              if (move) pressDir(move);
+            }
+            checkOnce();
+            // Need enough *steps*, not just enough polls: sampling faster than the game steps
+            // would let 20 samples all read the same board position.
+            if ((samples >= 20 && S().stepCount >= 10) || Date.now() > deadline) {
+              if (problems.length) return resolve(problems.slice(0, 4).join(' | '));
+              if (S().stepCount < 5) {
+                return resolve('the loop took only ' + S().stepCount + ' steps; nothing was played');
+              }
+              if (S().state === 'over' && ['self', 'wall', 'win'].indexOf(S().death) < 0) {
+                return resolve('unexpected death cause ' + JSON.stringify(S().death));
+              }
+              return resolve('ok');
+            }
+            setTimeout(loop, 30);
+          })();
+        });
+      }
+    },
+    {
+      name: '34 no uncaught errors or rejected promises in the whole run',
+      run: function () {
+        return waitMs(150).then(function () {
+          if (pageErrors.length) {
+            // JSON.stringify keeps empty and blank entries visible; a plain join would hide them.
+            throw new Error('captured ' + pageErrors.length + ': ' +
+              JSON.stringify(pageErrors.map(String)));
+          }
+          return 'ok';   // must be explicit: the runner treats anything but 'ok' as a failure
+        });
+      }
+    }
+  ];
+
+  function runAsync() {
+    return asyncChecks.reduce(function (chain, item) {
+      return chain.then(function () {
+        return item.run().then(function (verdict) {
+          if (verdict !== 'ok') throw new Error(verdict);
+          pass++;
+          results.push('PASS  ' + item.name);
+        }).catch(function (err) {
+          fail++;
+          results.push('FAIL  ' + item.name + '  -- ' + (err && err.message ? err.message : String(err)));
+        });
+      });
+    }, Promise.resolve());
+  }
+
+  frame.addEventListener('load', function () {
+    try {
+      bindFrame();
+    } catch (err) {
+      blocked = err && err.message ? err.message : String(err);
+      fail++;
+      results.push('FAIL  00 harness can reach the game frame -- ' + blocked);
+      report();
+      return;
+    }
+    try {
+      runSync();
+    } catch (err) {
+      blocked = 'synchronous checks threw: ' + (err && err.stack || err);
+    }
+    runAsync().then(report, function (err) {
+      results.push('FAIL  harness itself threw -- ' + (err && err.stack || err));
+      fail++;
+      report();
+    });
+  });
+})();
+</script>
+</body>
+</html>

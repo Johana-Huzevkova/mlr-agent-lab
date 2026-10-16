@@ -18,12 +18,23 @@ explicit working rules, and a written trail of what was run and how it was verif
 | [`PLAN.md`](PLAN.md) | Current progress, completed setup, next step. |
 | [`RUNS.md`](RUNS.md) | Model/endpoint per run and how results were verified. No secrets. |
 | `.gitignore` | Excludes `.venv/`, `.claude/`, `.env`, keys, caches, local state. |
-| `<task-name>/` | One folder per task, created at the start of that task (e.g. `setup-project/`). |
+| `setup-project/` | Task folder: the repository-setup checks and decisions. |
+| `snake/` | Task folder: single-file Snake game + browser test suite. |
+| `<task-name>/` | One folder per task, created at the start of that task. |
+
+## What is here to run
+
+| Path | What it is | How to run it |
+|---|---|---|
+| [`snake/`](snake/) | A complete Snake game in a single file, plus a 35-check browser test suite. | Double-click `snake/index.html` to play. See [`snake/README.md`](snake/README.md) to run the checks. |
+
+The Snake task is HTML/JavaScript and needs **no Python, no `uv`, and no packages** — the game
+is dependency-free by requirement, and the tests run in a browser you already have. The `uv`
+rules below apply to Python work, of which there is currently none.
 
 ## How to run things
 
-There is **no code yet** — nothing to execute beyond the checks below. Once Python code
-exists, all of it runs through `uv` (see `AGENTS.md`):
+Python work, when it exists, runs through `uv` (see `AGENTS.md`):
 
 ```bash
 uv sync                      # install the pinned environment from pyproject.toml
@@ -54,9 +65,13 @@ works). Either add that directory to `PATH`, or call it by full path:
 
 ## Verification
 
-Documentation-only changes are verified by reading the files back, confirming `CLAUDE.md`
-contains the literal `@AGENTS.md` import line, checking `git status` / `git diff`, and
-running a secret-pattern scan over every file in the repository. Raw output for the current
-set of checks is in [`setup-project/CHECKS.md`](setup-project/CHECKS.md); status lives in
-[`PLAN.md`](PLAN.md). Once there is code, "verified" means `uv run pytest` (plus lint) —
-not documentation review.
+Every task keeps its own `CHECKS.md` with the raw output behind its claims:
+[`setup-project/CHECKS.md`](setup-project/CHECKS.md) for the documentation setup,
+[`snake/CHECKS.md`](snake/CHECKS.md) for the game. Status lives in [`PLAN.md`](PLAN.md).
+
+- **Documentation-only changes** — read the files back, confirm `CLAUDE.md` still holds the
+  literal `@AGENTS.md` import, check `git status` / `git diff`, scan for secret patterns.
+- **The game** — `snake/CHECKS.md`. Run headless over `file://`, 35 checks, in two browsers.
+  It is a browser test, not `pytest`; there is no Python in this repository yet.
+- **Python code, when it exists** — `uv run pytest` plus lint. "Verified" has never meant
+  documentation review for code, and does not start now.

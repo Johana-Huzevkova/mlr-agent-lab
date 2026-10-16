@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Snake</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0a1011;
+    --panel: #111b1d;
+    --line: #1f3236;
+    --text: #dceaec;
+    --muted: #7f979b;
+    --accent: #4fd1a5;
+    --warn: #ef7b6c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(120% 100% at 50% 0%, #101a1c 0%, var(--bg) 70%);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 18px 14px 26px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(20px, 4vw, 26px);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 650;
+  }
+  h1 span { color: var(--accent); }
+  .wrap { width: 100%; max-width: 620px; display: flex; flex-direction: column; gap: 12px; }
+  .hud { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .stat {
+    flex: 1 1 90px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 7px 11px;
+  }
+  .label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .value { font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .boardwrap { position: relative; }
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #0c1416;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    touch-action: none;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    border-radius: 12px;
+    background: rgba(6, 11, 12, 0.82);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+  .overlay[hidden] { display: none; }
+  .card { max-width: 340px; text-align: center; }
+  .card h2 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 13px; }
+  kbd {
+    display: inline-block;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: #162224;
+    font: 11px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button, select {
+    font: inherit;
+    color: inherit;
+    background: #162224;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 9px 14px;
+    cursor: pointer;
+  }
+  button { font-weight: 600; }
+  button:hover { border-color: var(--accent); }
+  button:active { transform: translateY(1px); }
+  .grow { flex: 1 1 auto; }
+  .hint { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .pad { display: none; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+  .pad button { padding: 15px 0; font-size: 17px; }
+  .pad .blank { visibility: hidden; }
+  @media (pointer: coarse) { .pad { display: grid; } }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Snake<span>.</span></h1>
+
+  <div class="hud">
+    <div class="stat"><span class="label">Score</span><span class="value" id="score">0</span></div>
+    <div class="stat"><span class="label">Best</span><span class="value" id="best">0</span></div>
+    <div class="stat"><span class="label">Speed</span><span class="value" id="speed">1</span></div>
+    <div class="stat"><span class="label">Apples / step</span><span class="value" id="growth">1</span></div>
+  </div>
+
+  <div class="boardwrap">
+    <canvas id="board" width="600" height="450" aria-label="Snake board"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="card">
+        <h2 id="ovTitle">Snake</h2>
+        <p id="ovText">Arrow keys or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to steer,
+          <kbd>Space</kbd> to pause. Swipe on the board on a phone.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="primary" type="button">New game</button>
+    <button id="pause" type="button">Pause</button>
+    <button id="wrapBtn" type="button" aria-pressed="false">Walls: on</button>
+    <button id="soundBtn" type="button" aria-pressed="true">Sound: on</button>
+    <label class="stat grow" style="display:flex;align-items:center;gap:8px;padding:0 11px;">
+      <span class="label">Apples<br>per step</span>
+      <select id="growthSel" aria-label="Growth: segments added per apple">
+        <option value="1" selected>1 &mdash; classic</option>
+        <option value="2">2 &mdash; brisk</option>
+        <option value="3">3 &mdash; hungry</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="pad">
+    <button class="blank" type="button" tabindex="-1" aria-hidden="true"></button>
+    <button type="button" data-dir="0,-1" aria-label="Up">&#9650;</button>
+    <button class="blank" type="button" tabindex="-1" aria-hidden="true"></button>
+    <button type="button" data-dir="-1,0" aria-label="Left">&#9664;</button>
+    <button type="button" data-dir="0,1" aria-label="Down">&#9660;</button>
+    <button type="button" data-dir="1,0" aria-label="Right">&#9654;</button>
+  </div>
+
+  <p class="hint">Eat the apple, grow longer, do not bite yourself. With walls off, the snake
+    slips through the edge and comes back on the other side.</p>
+</div>
+
+<script>
+/* Single-file Snake. No dependencies, no build step, no network access, no server:
+   open this file directly (file://) and it runs. Engine notes: `snake/NOTES.md`.
+
+   The whole program is wrapped in a function on purpose. A top-level `var` in a classic script
+   becomes a property of `window`, so a short name like `S` would collide with anything else
+   claiming `window.S` -- including a debug alias this file itself once defined, which is what
+   broke the game the first time round. The IIFE keeps every name private and leaves `window`
+   holding exactly one thing: the __SNAKE__ test hook at the bottom. */
+(function () {
+'use strict';
+
+var COLS = 24;
+var ROWS = 18;
+var BASE_STEP_MS = 140;   // tick length at speed 1
+var MIN_STEP_MS = 62;     // speed cap
+var SPEED_EVERY = 4;      // apples per speed-up
+var GROWTH_DEFAULT = 1;
+
+var canvas = document.getElementById('board');
+var ctx = canvas.getContext('2d');
+var els = {
+  score: document.getElementById('score'),
+  best: document.getElementById('best'),
+  speed: document.getElementById('speed'),
+  growth: document.getElementById('growth'),
+  overlay: document.getElementById('overlay'),
+  ovTitle: document.getElementById('ovTitle'),
+  ovText: document.getElementById('ovText'),
+  primary: document.getElementById('primary'),
+  pause: document.getElementById('pause'),
+  wrapBtn: document.getElementById('wrapBtn'),
+  soundBtn: document.getElementById('soundBtn'),
+  growthSel: document.getElementById('growthSel')
+};
+
+/* ---------- state (one object, mutated in place, so __SNAKE__.state stays valid) ---------- */
+
+var S = {
+  snake: [],          // head is snake[0], items are {x, y}
+  dir: { x: 1, y: 0 },
+  pending: [],        // queued direction changes, max 2
+  apple: { x: 0, y: 0 },
+  score: 0,
+  best: 0,
+  speedLevel: 1,
+  stepMs: BASE_STEP_MS,
+  grow: GROWTH_DEFAULT,      // segments added per apple
+  wrap: false,               // false = walls kill, true = tunnel through edges
+  state: 'ready',            // 'ready' | 'running' | 'paused' | 'over'
+  elapsed: 0,                // game time, ms (does not advance while paused)
+  death: '',                 // 'self' | 'wall'
+  newBest: false,
+  stepCount: 0
+};
+
+/* ---------- persistence (file:// can throw on localStorage; never let it break the game) ---------- */
+
+function store(key, value) {
+  try { window.localStorage.setItem(key, String(value)); } catch (e) { /* private mode or file:// */ }
+}
+function load(key, fallback) {
+  try {
+    var raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : raw;
+  } catch (e) { return fallback; }
+}
+
+function refreshBest() {
+  var stored = parseInt(load('snake.best', '0'), 10);
+  // max(), never a plain assignment: if storage is unavailable the session's best
+  // still has to survive a reset.
+  S.best = Math.max(S.best, isNaN(stored) ? 0 : stored);
+  if (S.score > S.best) {
+    S.best = S.score;
+    store('snake.best', String(S.best));
+  }
+}
+
+/* ---------- game logic (pure grid math, no DOM) ---------- */
+
+function occupancy() {
+  var taken = Object.create(null);
+  for (var i = 0; i < S.snake.length; i++) taken[keyOf(S.snake[i].x, S.snake[i].y)] = true;
+  return taken;
+}
+function keyOf(x, y) { return x + ',' + y; }
+
+function placeApple() {
+  var taken = occupancy();   // the snake only; the old apple cell is free by definition
+  var free = [];
+  for (var y = 0; y < ROWS; y++) {
+    for (var x = 0; x < COLS; x++) {
+      if (!taken[keyOf(x, y)]) free.push({ x: x, y: y });
+    }
+  }
+  if (free.length === 0) { win(); return; }     // board completely filled
+  S.apple = free[(Math.random() * free.length) | 0];
+}
+
+function reset(startRunning) {
+  var startY = ROWS >> 1;
+  S.snake = [{ x: 4, y: startY }, { x: 3, y: startY }, { x: 2, y: startY }];
+  S.dir = { x: 1, y: 0 };
+  S.pending = [];
+  S.score = 0;
+  S.speedLevel = 1;
+  S.stepMs = BASE_STEP_MS;
+  S.state = startRunning ? 'running' : 'ready';
+  S.death = '';
+  S.newBest = false;
+  S.elapsed = 0;
+  S.stepCount = 0;
+  S.apple = { x: -1, y: -1 };
+  placeApple();
+  refreshBest();
+  showOverlay();
+  render();
+  updateHud();
+}
+
+function enqueueDir(nx, ny) {
+  if (S.state === 'over') return;
+  if (S.state === 'ready') { S.state = 'running'; showOverlay(); }
+  if (S.state === 'paused') setPaused(false);
+  var last = S.pending.length ? S.pending[S.pending.length - 1] : S.dir;
+  if (nx === last.x && ny === last.y) return;             // same direction, ignore
+  if (nx === -last.x && ny === -last.y) return;           // straight reversal, illegal
+  if (S.pending.length >= 2) return;                      // input buffer full
+  S.pending.push({ x: nx, y: ny });
+}
+
+function step() {
+  if (S.state !== 'running') return;
+  if (S.pending.length) S.dir = S.pending.shift();
+
+  var head = S.snake[0];
+  var nx = head.x + S.dir.x;
+  var ny = head.y + S.dir.y;
+
+  if (S.wrap) {
+    nx = (nx + COLS) % COLS;
+    ny = (ny + ROWS) % ROWS;
+  } else if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) {
+    die('wall');
+    return;
+  }
+
+  // The tail cell vacates on a non-growing move, so it is a legal target there.
+  var willGrow = (nx === S.apple.x && ny === S.apple.y);
+  var limit = willGrow ? S.snake.length : S.snake.length - 1;
+  for (var i = 0; i < limit; i++) {
+    if (S.snake[i].x === nx && S.snake[i].y === ny) { die('self'); return; }
+  }
+
+  S.snake.unshift({ x: nx, y: ny });
+  if (willGrow) {
+    S.score += 1;
+    S.speedLevel = 1 + Math.floor(S.score / SPEED_EVERY);
+    S.stepMs = Math.max(MIN_STEP_MS, BASE_STEP_MS - (S.speedLevel - 1) * 8);
+    for (var g = 1; g < S.grow; g++) S.snake.push({ x: nx, y: ny });  // extra segments stack on the head
+    if (S.score > S.best) {
+      S.best = S.score;
+      S.newBest = true;
+      store('snake.best', String(S.best));
+    }
+    placeApple();
+  } else {
+    S.snake.pop();
+  }
+  S.stepCount++;
+}
+
+function die(cause) {
+  S.state = 'over';
+  S.death = cause;
+  showOverlay();
+}
+
+function win() {
+  S.state = 'over';
+  S.death = 'win';
+  showOverlay();
+}
+
+function setPaused(next) {
+  if (S.state === 'running' && next) S.state = 'paused';
+  else if (S.state === 'paused' && !next) S.state = 'running';
+  showOverlay();
+  updateHud();
+}
+
+function primaryAction() {
+  if (S.state === 'over') { reset(true); return; }
+  if (S.state === 'ready') { S.state = 'running'; showOverlay(); updateHud(); return; }
+  setPaused(S.state !== 'paused');
+}
+
+/* ---------- rendering ---------- */
+
+var CELL = 0;   // CSS pixels per cell, set by resizeCanvas()
+
+function resizeCanvas() {
+  var cssW = canvas.clientWidth || canvas.width;
+  var dpr = Math.min(3, window.devicePixelRatio || 1);
+  CELL = cssW / COLS;
+  var cssH = Math.round(CELL * ROWS);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  if (canvas.style.height !== cssH + 'px') canvas.style.height = cssH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  render();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function render() {
+  var w = canvas.width / (Math.min(3, window.devicePixelRatio || 1));
+  var h = canvas.height / (Math.min(3, window.devicePixelRatio || 1));
+  var dead = S.state === 'over';
+  var paused = S.state === 'paused';
+
+  ctx.fillStyle = '#0c1416';
+  ctx.fillRect(0, 0, w, h);
+
+  // board frame: solid line where the snake dies, dashed where it tunnels
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = S.wrap ? 'rgba(127, 151, 155, 0.45)' : '#274046';
+  if (S.wrap) ctx.setLineDash([7, 7]);
+  ctx.strokeRect(1, 1, w - 2, h - 2);
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.022)';
+  for (var y = 0; y < ROWS; y++) {
+    for (var x = 0; x < COLS; x++) {
+      if ((x + y) % 2 === 0) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+
+  var pad = Math.max(1.5, CELL * 0.14);
+  if (S.apple.x >= 0) {
+    var ax = (S.apple.x + 0.5) * CELL, ay = (S.apple.y + 0.5) * CELL;
+    var rad = Math.max(2, CELL * 0.31);
+    ctx.save();
+    ctx.shadowColor = 'rgba(239, 123, 108, 0.75)';
+    ctx.shadowBlur = CELL * 0.6;
+    ctx.fillStyle = dead ? '#8d4a42' : '#ef7b6c';
+    ctx.beginPath();
+    ctx.arc(ax, ay, rad, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = '#4fd1a5';
+    ctx.lineWidth = Math.max(1, CELL * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay - rad * 0.85);
+    ctx.lineTo(ax + rad * 0.45, ay - rad * 1.3);
+    ctx.stroke();
+  }
+
+  var n = S.snake.length;
+  for (var i = n - 1; i >= 0; i--) {
+    var seg = S.snake[i];
+    var t = n > 1 ? i / (n - 1) : 0;
+    var hue = 168 - t * 26;
+    var light = 60 - t * 20;
+    if (paused) light -= 8;
+    ctx.fillStyle = dead ? 'hsl(8, 38%, ' + (52 - t * 16) + '%)' : 'hsl(' + hue + ', 58%, ' + light + '%)';
+    var inset = i === 0 ? pad * 0.55 : pad;
+    roundRect(seg.x * CELL + inset, seg.y * CELL + inset,
+              CELL - inset * 2, CELL - inset * 2, CELL * 0.28);
+    ctx.fill();
+  }
+
+  if (n) {   // eyes, on the side the head is facing
+    var head = S.snake[0];
+    var cx = (head.x + 0.5) * CELL, cy = (head.y + 0.5) * CELL;
+    var ox = S.dir.x, oy = S.dir.y;
+    if (Math.abs(ox) === 1) { oy = 0; } else { ox = 0; }
+    var sx = -oy, sy = ox;              // sideways unit
+    var fwd = CELL * 0.16, side = CELL * 0.19, eye = Math.max(1.2, CELL * 0.075);
+    ctx.fillStyle = '#08100f';
+    for (var e = -1; e <= 1; e += 2) {
+      ctx.beginPath();
+      ctx.arc(cx + ox * fwd + sx * side * e, cy + oy * fwd + sy * side * e, eye, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+/* ---------- hud and overlay ---------- */
+
+function updateHud() {
+  needsRender = true;   // any HUD refresh means the board state changed too
+  els.score.textContent = String(S.score);
+  els.best.textContent = String(S.best);
+  els.speed.textContent = String(S.speedLevel);
+  els.growth.textContent = String(S.grow);
+  els.pause.textContent = S.state === 'paused' ? 'Resume' : 'Pause';
+  els.primary.textContent = S.state === 'over' ? 'New game'
+    : S.state === 'ready' ? 'Start' : (S.state === 'paused' ? 'Resume' : 'Restart');
+  els.wrapBtn.textContent = 'Walls: ' + (S.wrap ? 'off' : 'on');
+  els.wrapBtn.setAttribute('aria-pressed', S.wrap ? 'true' : 'false');
+  els.soundBtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+  els.soundBtn.setAttribute('aria-pressed', soundOn ? 'true' : 'false');
+}
+
+function showOverlay() {
+  needsRender = true;
+  var show = S.state !== 'running';
+  els.overlay.hidden = !show;
+  els.overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+  if (!show) return;
+  if (S.state === 'ready') {
+    els.ovTitle.textContent = 'Snake';
+    els.ovText.textContent = 'Press an arrow key, or Start. Space pauses.';
+  } else if (S.state === 'paused') {
+    els.ovTitle.textContent = 'Paused';
+    els.ovText.textContent = 'Score ' + S.score + '. Space or Resume to continue.';
+  } else if (S.state === 'over' && S.death === 'win') {
+    els.ovTitle.textContent = 'Board cleared';
+    els.ovText.textContent = 'Score ' + S.score + ' — every cell is snake. New game?';
+  } else if (S.state === 'over') {
+    els.ovTitle.textContent = S.death === 'wall' ? 'Hit the wall' : 'Bit yourself';
+    els.ovText.textContent = 'Score ' + S.score + ' · length ' + S.snake.length +
+      ' · best ' + S.best + (S.newBest ? ' (new best)' : '') + '. New game?';
+  }
+}
+
+/* ---------- sound (WebAudio, created on the first gesture so no autoplay warning) ---------- */
+
+var soundOn = true;
+var audio = null;
+
+function beep(freq, ms, gainPeak) {
+  if (!soundOn) return;
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audio) audio = new AC();
+    if (audio.state === 'suspended') {
+      // resume() rejects when there is no audio device (headless browsers); that rejection is
+      // asynchronous, so the surrounding try/catch cannot see it. Swallow it here.
+      var waking = audio.resume();
+      if (waking && typeof waking.catch === 'function') waking.catch(function () {});
+    }
+    var osc = audio.createOscillator();
+    var gain = audio.createGain();
+    var t = audio.currentTime;
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(gainPeak, t);
+    gain.gain.exponentialRampToValueAtTime(0.0005, t + ms / 1000);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(t);
+    osc.stop(t + ms / 1000);
+  } catch (e) { soundOn = false; }   // never let audio break a move
+}
+
+/* ---------- main loop ---------- */
+
+var lastTime = 0;
+var acc = 0;
+var needsRender = true;
+
+/* One tick of the game: accumulate real time, advance whole steps, refresh the HUD.
+   The wall-clock clock (not `now`) is deliberate: the same function has to work when it is
+   driven by requestAnimationFrame and when a headless browser starves that callback, so it
+   never trusts the timestamp it is handed. */
+function tick() {
+  var now = Date.now();
+  var dt = lastTime ? Math.min(250, now - lastTime) : 0;
+  lastTime = now;
+  if (S.state !== 'running') { acc = 0; return false; }
+  var scoreBefore = S.score;
+  S.elapsed += dt;
+  acc += dt;
+  var steps = 0;
+  while (acc >= S.stepMs && steps < 4 && S.state === 'running') {
+    acc -= S.stepMs;
+    step();
+    steps++;
+  }
+  if (steps > 0) {
+    if (S.score > scoreBefore) beep(720, 55, 0.06);        // ate
+    else if (S.state === 'over') beep(110, 220, 0.09);     // died
+    updateHud();
+  }
+  return steps > 0;
+}
+
+function frame() {
+  tick();
+  // Paint only when something changed. The game repaints at most 16 times a second; the
+  // extra frames a 60-144 Hz display offers would be spent redrawing an identical board.
+  if (needsRender) { render(); needsRender = false; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* Clock source for environments that do not service requestAnimationFrame (a headless
+   browser under --virtual-time-budget delivers almost no frames). In a real browser the loop
+   above is already running, so this only costs an empty function call every 100 ms. */
+var clockId = setInterval(function () {
+  if (!lastTime || Date.now() - lastTime > 80) tick();
+}, 100);
+window.addEventListener('pagehide', function () { clearInterval(clockId); });
+
+/* ---------- input ---------- */
+
+var KEYS = {
+  ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+  KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0]
+};
+
+document.addEventListener('keydown', function (event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;   // Ctrl+R / Cmd+R stay the browser's
+  if (event.repeat) return;
+  var tag = event.target && event.target.tagName ? event.target.tagName : '';
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return;            // the control owns its arrow keys
+  var d = KEYS[event.code];
+  if (d) {
+    event.preventDefault();
+    enqueueDir(d[0], d[1]);
+    return;
+  }
+  if (event.code === 'Space' || event.code === 'Enter') {
+    if (tag === 'BUTTON' || tag === 'A') return;   // let the focused control take its own click
+    event.preventDefault();
+    primaryAction();
+  } else if (event.code === 'KeyP') {
+    event.preventDefault();
+    setPaused(S.state === 'running');
+  } else if (event.code === 'KeyR') {
+    event.preventDefault();
+    reset(true);
+  } else if (event.code === 'KeyM') {
+    event.preventDefault();
+    soundOn = !soundOn;
+    updateHud();
+  }
+}, { passive: false });
+
+els.primary.addEventListener('click', function () { primaryAction(); els.primary.blur(); });
+els.pause.addEventListener('click', function () { setPaused(S.state === 'running'); els.pause.blur(); });
+els.wrapBtn.addEventListener('click', function () { S.wrap = !S.wrap; updateHud(); showOverlay(); els.wrapBtn.blur(); });
+els.soundBtn.addEventListener('click', function () { soundOn = !soundOn; updateHud(); els.soundBtn.blur(); });
+els.growthSel.addEventListener('change', function () {
+  var v = parseInt(els.growthSel.value, 10);
+  S.grow = isNaN(v) || v < 1 ? GROWTH_DEFAULT : Math.min(5, v);
+  updateHud();
+});
+
+var pads = document.querySelectorAll('.pad button[data-dir]');
+for (var p = 0; p < pads.length; p++) {
+  (function (btn) {
+    btn.addEventListener('click', function () {
+      var parts = btn.getAttribute('data-dir').split(',');
+      enqueueDir(parseInt(parts[0], 10), parseInt(parts[1], 10));
+      btn.blur();
+    });
+  })(pads[p]);
+}
+
+var touchStart = null;
+canvas.addEventListener('touchstart', function (event) {
+  var t = event.changedTouches[0];
+  touchStart = { x: t.clientX, y: t.clientY };
+}, { passive: true });
+canvas.addEventListener('touchend', function (event) {
+  if (!touchStart) return;
+  var t = event.changedTouches[0];
+  var dx = t.clientX - touchStart.x;
+  var dy = t.clientY - touchStart.y;
+  touchStart = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) { primaryAction(); return; }   // tap = start/pause
+  if (Math.abs(dx) > Math.abs(dy)) enqueueDir(dx > 0 ? 1 : -1, 0);
+  else enqueueDir(0, dy > 0 ? 1 : -1);
+}, { passive: true });
+
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden && S.state === 'running') setPaused(true);
+});
+
+if (window.ResizeObserver) new ResizeObserver(resizeCanvas).observe(canvas);
+window.addEventListener('resize', resizeCanvas);
+
+/* ---------- start ---------- */
+
+reset(false);
+resizeCanvas();
+// The loop is already running (started where it is defined above); nothing to kick off here
+// beyond the first paint, which resizeCanvas() performed.
+
+/* Test hook. Deliberate, documented in snake/NOTES.md: it lets the scripted checks in
+   snake/tests/ drive step() directly in this same file. Open the console and use
+   __SNAKE__.state, __SNAKE__.step(), __SNAKE__.enqueueDir(0,-1), __SNAKE__.reset(true).
+
+   Note the absence of a short alias like `window.S`: at top level of a classic script a global
+   `var S` *is* `window.S`, so assigning one here would clobber the game's own state object and
+   kill the loop. The whole script is wrapped in a function for the same reason -- see NOTES.md. */
+window.__SNAKE__ = {
+  state: S,
+  step: step,
+  reset: reset,
+  render: render,
+  enqueueDir: enqueueDir,
+  setPaused: setPaused,
+  COLS: COLS,
+  ROWS: ROWS,
+  BASE_STEP_MS: BASE_STEP_MS,
+  SPEED_EVERY: SPEED_EVERY
+};
+})();
+</script>
+</body>
+</html>

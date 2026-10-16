@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>probe</title></head><body>
+<pre id="out">probing...</pre>
+<script>
+/* Throwaway environment probe: how do rAF and setTimeout behave in this headless mode?
+   Not part of the test suite; kept because the answer is recorded in snake/CHECKS.md. */
+(function () {
+  var raf = 0, timers = 0, t0 = Date.now(), maxGap = 0, last = t0;
+  var state = 'running';
+  var elapsed = 0;
+  (function loop(now) {
+    var t = Date.now();
+    if (t - last > maxGap) maxGap = t - last;
+    last = t;
+    raf++;
+    if (state === 'running') elapsed += 16;
+    requestAnimationFrame(loop);
+  })();
+  (function tick() { timers++; setTimeout(tick, 16); })();
+
+  var stateChecks = [];
+  function sample(label) {
+    stateChecks.push(label + ': raf=' + raf + ' timers=' + timers +
+      ' elapsed=' + elapsed + ' wall=' + (Date.now() - t0) + 'ms');
+  }
+  setTimeout(function () { sample('t=1000ms'); }, 1000);
+  setTimeout(function () {
+    state = 'paused';
+    var frozen = elapsed;
+    setTimeout(function () {
+      sample('paused +1000ms (elapsed should be unchanged: ' + frozen + ')');
+      document.getElementById('out').textContent =
+        'raf=' + raf + ' timers=' + timers + ' wallms=' + (Date.now() - t0) +
+        ' maxGapBetweenFrames=' + maxGap + 'ms\n' + stateChecks.join('\n') +
+        '\nPROBE-DONE';
+      document.title = 'PROBE raf=' + raf + ' timers=' + timers;
+    }, 1000);
+  }, 2500);
+})();
+</script>
+</body></html>
